@@ -44,6 +44,45 @@ GitHub provides additional document on [forking a repository](https://help.githu
 Looking at the existing issues is a great way to find something to contribute on. As our projects, by default, use the default GitHub issue labels (enhancement/bug/duplicate/help wanted/invalid/question/wontfix), looking at any 'help wanted' issues is a great place to start.
 
 
+## Blueprint Testing
+
+When creating or modifying blueprints, include a `test.sh` script that validates the blueprint works as documented in its README. This helps with maintenance and ensures blueprints continue to work as Karpenter evolves.
+
+### Running Tests
+
+Use the Makefile to run blueprint tests:
+
+```bash
+# Set required environment variables first
+export CLUSTER_NAME=$(terraform -chdir=cluster/terraform output -raw cluster_name)
+export KARPENTER_NODE_IAM_ROLE_NAME=$(terraform -chdir=cluster/terraform output -raw node_instance_role_name)
+
+# Run all blueprint tests
+make test
+
+# Run tests for a specific blueprint
+make test-node-overlay
+# or
+make test BLUEPRINT=node-overlay
+
+# List blueprints that have tests
+make list-blueprints
+
+# Check environment variable status
+make env
+```
+
+### Using Kiro for Blueprint Development
+
+If you're using [Kiro](https://kiro.dev), you can leverage the blueprint testing steering file to help create test scripts:
+
+1. Open the blueprint you're working on
+2. Reference `#blueprint-testing` in your Kiro chat to load the testing guidelines
+3. Ask Kiro to help create a test script based on your blueprint's README
+
+See `blueprints/node-overlay/test.sh` for a reference implementation.
+
+
 ## Code of Conduct
 This project has adopted the [Amazon Open Source Code of Conduct](https://aws.github.io/code-of-conduct).
 For more information see the [Code of Conduct FAQ](https://aws.github.io/code-of-conduct-faq) or contact
