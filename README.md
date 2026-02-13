@@ -152,6 +152,7 @@ Here's the list of blueprints we have so far:
 * [Deploy an NVIDIA GPU workload](/blueprints/nvidia-gpu-workload/)
 * [Accelerating image pull time using SOCI parallel mode](/blueprints/soci-snapshotter/)
 * [Reserve node capacity for spiky workloads](/blueprints/node-reserved-headroom/)
+* [Using NodeOverlays for instance prioritization and GPU slicing](/blueprints/node-overlay/)
 
 **NOTE:** Each blueprint is independent from each other, so you can deploy and test multiple blueprints at the same time in the same Kubernetes cluster. However, to reduce noise, we recommend you to test one blueprint at a time.
 

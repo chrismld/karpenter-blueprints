@@ -1,0 +1,41 @@
+# Sample workload requesting fractional GPU (1/4 of a GPU)
+#
+# This deployment requests nvidia.com/gpu-slice: 1, which represents
+# 1/4 of a physical GPU. With the NodeOverlay configured, Karpenter
+# understands that 4 of these pods can fit on a single GPU instance.
+#
+# IMPORTANT: This workload assumes you have configured GPU sharing
+# (time-slicing, MIG, etc.) on your nodes. The NodeOverlay only
+# affects Karpenter's scheduling decisions, not actual GPU allocation.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: workload-gpu-slices
+spec:
+  replicas: 4
+  selector:
+    matchLabels:
+      app: workload-gpu-slices
+  template:
+    metadata:
+      labels:
+        app: workload-gpu-slices
+    spec:
+      nodeSelector:
+        intent: gpu-workloads
+        nvidia.com/gpu.present: "true"
+      tolerations:
+        - key: nvidia.com/gpu
+          operator: Exists
+          effect: NoSchedule
+      containers:
+      - name: gpu-workload
+        image: public.ecr.aws/eks-distro/kubernetes/pause:v1.33.0-eks-1-33-4
+        imagePullPolicy: Always
+        resources:
+          requests:
+            cpu: 500m
+            memory: 1Gi
+            nvidia.com/gpu-slice: 1
+          limits:
+            nvidia.com/gpu-slice: 1

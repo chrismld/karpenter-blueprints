@@ -1,0 +1,21 @@
+# NodeOverlay to prefer Graviton 4 (c8g) over Graviton 3 (c7g)
+# By increasing the perceived price of c7g instances by 50%,
+# Karpenter will prefer c8g instances when both are available.
+#
+# Note: This works deterministically with On-Demand instances.
+# For Spot instances, EC2 uses capacity-optimized-prioritized strategy
+# where capacity availability takes precedence over price preferences.
+apiVersion: karpenter.sh/v1alpha1
+kind: NodeOverlay
+metadata:
+  name: prefer-graviton4
+spec:
+  # Higher weight ensures this overlay takes precedence
+  weight: 10
+  # Target c7g instance family (Graviton 3)
+  requirements:
+    - key: karpenter.k8s.aws/instance-family
+      operator: In
+      values: ["c7g"]
+  # Increase perceived price by 50% to make c8g more attractive
+  priceAdjustment: "+50%"
