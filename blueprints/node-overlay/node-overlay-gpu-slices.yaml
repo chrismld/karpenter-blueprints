@@ -1,22 +1,24 @@
-# NodeOverlay to add GPU slice extended resources
+# NodeOverlay to inform Karpenter about GPU time-slicing capacity
 #
-# IMPORTANT: This overlay only affects Karpenter's scheduling simulation.
-# It does NOT configure actual GPU slicing on the nodes.
+# IMPORTANT: This overlay helps Karpenter make better provisioning decisions
+# by understanding that GPU instances can serve more workloads than the
+# physical GPU count suggests.
 #
-# You are responsible for:
-# 1. Configuring GPU sharing on your nodes (time-slicing, MIG, MPS, etc.)
-# 2. Ensuring your applications are aware they're sharing GPU resources
-# 3. Setting appropriate resource limits in your workloads
+# When time-slicing is configured on nodes (via EC2NodeClass userData),
+# a single GPU can serve multiple pods. However, Karpenter doesn't know
+# this until the node exists. NodeOverlay bridges this gap by telling
+# Karpenter about the effective capacity BEFORE provisioning.
 #
-# Common GPU sharing options:
-# - NVIDIA Time-Slicing: Software-based sharing, works on all NVIDIA GPUs
-# - MIG (Multi-Instance GPU): Hardware partitioning, requires A100/H100
-# - MPS (Multi-Process Service): CUDA-level sharing for concurrent kernels
+# This enables:
+# - Better initial node selection (right-sizing from the start)
+# - Smarter consolidation decisions
+# - More accurate cost calculations
 #
-# This overlay tells Karpenter that each GPU can serve 4 workloads,
-# enabling better bin-packing and consolidation decisions.
+# The actual GPU time-slicing is configured in the EC2NodeClass userData
+# using Bottlerocket's built-in NVIDIA device plugin settings.
 ---
 # Overlay for instances with 1 GPU (g5.xlarge, g5.2xlarge, g4dn.xlarge, etc.)
+# Tells Karpenter this instance can serve 4 GPU workloads
 apiVersion: karpenter.sh/v1alpha1
 kind: NodeOverlay
 metadata:
@@ -31,7 +33,7 @@ spec:
       operator: In
       values: ["nvidia"]
   capacity:
-    nvidia.com/gpu-slice: 4
+    nvidia.com/gpu: 4
 ---
 # Overlay for instances with 2 GPUs
 apiVersion: karpenter.sh/v1alpha1
@@ -48,7 +50,7 @@ spec:
       operator: In
       values: ["nvidia"]
   capacity:
-    nvidia.com/gpu-slice: 8
+    nvidia.com/gpu: 8
 ---
 # Overlay for instances with 4 GPUs (g5.12xlarge, p4d.24xlarge, etc.)
 apiVersion: karpenter.sh/v1alpha1
@@ -65,7 +67,7 @@ spec:
       operator: In
       values: ["nvidia"]
   capacity:
-    nvidia.com/gpu-slice: 16
+    nvidia.com/gpu: 16
 ---
 # Overlay for instances with 8 GPUs (p4d.24xlarge, p5.48xlarge, etc.)
 apiVersion: karpenter.sh/v1alpha1
@@ -82,4 +84,4 @@ spec:
       operator: In
       values: ["nvidia"]
   capacity:
-    nvidia.com/gpu-slice: 32
+    nvidia.com/gpu: 32

@@ -1,0 +1,30 @@
+# EC2NodeClass for GPU instances using Bottlerocket with time-slicing enabled
+# Bottlerocket has built-in support for NVIDIA GPU time-slicing via userData.
+# This configuration creates 4 GPU slices per physical GPU.
+#
+# With rename-by-default = false, the node advertises nvidia.com/gpu: 4
+# (instead of nvidia.com/gpu.shared: 4), so pods can request nvidia.com/gpu: 1
+# and 4 pods will fit on a single GPU instance.
+apiVersion: karpenter.k8s.aws/v1
+kind: EC2NodeClass
+metadata:
+  name: gpu-bottlerocket
+spec:
+  amiSelectorTerms:
+    - alias: bottlerocket@latest
+  role: "<<KARPENTER_NODE_IAM_ROLE_NAME>>"
+  securityGroupSelectorTerms:
+    - tags:
+        karpenter.sh/discovery: "<<CLUSTER_NAME>>"
+  subnetSelectorTerms:
+    - tags:
+        karpenter.sh/discovery: "<<CLUSTER_NAME>>"
+  tags:
+    intent: gpu-workloads
+    karpenter.sh/discovery: "<<CLUSTER_NAME>>"
+  userData: |
+    [settings.kubelet-device-plugins.nvidia]
+    device-sharing-strategy = "time-slicing"
+    [settings.kubelet-device-plugins.nvidia.time-slicing]
+    replicas = 4
+    rename-by-default = false

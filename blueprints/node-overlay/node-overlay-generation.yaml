@@ -1,21 +1,51 @@
-# NodeOverlay to prefer Graviton 4 (c8g) over Graviton 3 (c7g)
-# By increasing the perceived price of c7g instances by 50%,
-# Karpenter will prefer c8g instances when both are available.
+# NodeOverlay to prefer latest generation instances
+# By increasing the perceived price of older generations,
+# Karpenter will prefer newer generation instances when available.
+#
+# This approach works across all instance families (c, m, r, etc.)
+# without needing to specify each family individually.
 #
 # Note: This works deterministically with On-Demand instances.
-# For Spot instances, EC2 uses capacity-optimized-prioritized strategy
+# For Spot instances, EC2 uses price-capacity-optimized strategy
 # where capacity availability takes precedence over price preferences.
+---
+# Penalize generation 5 instances (e.g., c5, m5, r5)
 apiVersion: karpenter.sh/v1alpha1
 kind: NodeOverlay
 metadata:
-  name: prefer-graviton4
+  name: penalize-gen5
 spec:
-  # Higher weight ensures this overlay takes precedence
   weight: 10
-  # Target c7g instance family (Graviton 3)
   requirements:
-    - key: karpenter.k8s.aws/instance-family
+    - key: karpenter.k8s.aws/instance-generation
       operator: In
-      values: ["c7g"]
-  # Increase perceived price by 50% to make c8g more attractive
-  priceAdjustment: "+50%"
+      values: ["5"]
+  priceAdjustment: "+45%"
+---
+# Penalize generation 6 instances (e.g., c6g, m6i, r6g)
+apiVersion: karpenter.sh/v1alpha1
+kind: NodeOverlay
+metadata:
+  name: penalize-gen6
+spec:
+  weight: 10
+  requirements:
+    - key: karpenter.k8s.aws/instance-generation
+      operator: In
+      values: ["6"]
+  priceAdjustment: "+30%"
+---
+# Penalize generation 7 instances (e.g., c7g, m7i, r7g)
+apiVersion: karpenter.sh/v1alpha1
+kind: NodeOverlay
+metadata:
+  name: penalize-gen7
+spec:
+  weight: 10
+  requirements:
+    - key: karpenter.k8s.aws/instance-generation
+      operator: In
+      values: ["7"]
+  priceAdjustment: "+15%"
+# Generation 8 instances (e.g., c8g, m8g) will have no penalty,
+# making them the preferred choice when available.

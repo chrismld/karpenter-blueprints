@@ -26,6 +26,7 @@ This blueprint demonstrates both use cases with practical examples.
 NodeOverlays require enabling the `NodeOverlay` feature gate in Karpenter. Update your Karpenter deployment to include the feature gate:
 
 ```sh
+helm registry logout public.ecr.aws
 helm upgrade karpenter oci://public.ecr.aws/karpenter/karpenter \
   --namespace karpenter \
   --set "settings.featureGates.nodeOverlay=true" \
@@ -34,11 +35,13 @@ helm upgrade karpenter oci://public.ecr.aws/karpenter/karpenter \
 
 Alternatively, if you're using the Terraform template from this repository, you can add the feature gate to the Karpenter Helm values.
 
-Verify the feature gate is enabled by checking the Karpenter controller logs:
+Verify the feature gate is enabled by checking the Karpenter deployment configuration:
 
 ```sh
-kubectl -n karpenter logs -l app.kubernetes.io/name=karpenter --all-containers=true | grep -i "feature"
+kubectl -n karpenter get deployment karpenter -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="FEATURE_GATES")].value}'
 ```
+
+You should see `NodeOverlay=true` in the output.
 
 ---
 
@@ -46,9 +49,9 @@ kubectl -n karpenter logs -l app.kubernetes.io/name=karpenter --all-containers=t
 
 ### Overview
 
-When you have multiple instance generations available (e.g., Graviton 3 and Graviton 4), you might want Karpenter to prefer the latest generation for better price-performance. By default, Karpenter selects instances based on price, but newer generations often provide better value even at similar or slightly higher prices.
+When you have multiple instance generations available (e.g., generation 6, 7, and 8), you might want Karpenter to prefer the latest generation for better price-performance. By default, Karpenter selects instances based on price, but newer generations often provide better value even at similar or slightly higher prices.
 
-Using NodeOverlays, you can adjust the perceived price of older generation instances to make newer generations more attractive to Karpenter's scheduling algorithm.
+Using NodeOverlays, you can adjust the perceived price of older generation instances to make newer generations more attractive to Karpenter's scheduling algorithm. By using the `karpenter.k8s.aws/instance-generation` label, you can apply this preference across all instance families (c, m, r, etc.) without needing to specify each one individually.
 
 ### How It Works
 
@@ -61,9 +64,52 @@ For this reason, we'll use On-Demand instances in this example to demonstrate de
 
 ### Deploy
 
-**NOTE:** This scenario assumes your `default` NodePool allows both `c7g` and `c8g` instance families. If your NodePool restricts instance families, make sure both are included in the requirements.
+**NOTE:** This scenario assumes your `default` NodePool is configured to use generation 5 and above (i.e., `karpenter.k8s.aws/instance-generation` with operator `Gt` and value `"4"`). If your NodePool includes generation 4 or below, you'll need to add additional NodeOverlays to penalize those generations as well.
 
-First, let's create a NodeOverlay that makes `c7g` (Graviton 3) instances appear 50% more expensive, effectively giving preference to `c8g` (Graviton 4) instances:
+First, let's create NodeOverlays that penalize older generations. Generation 5 instances get a 45% price increase, generation 6 gets 30%, generation 7 gets 15%, and generation 8 (the latest) has no penalty:
+
+```yaml
+# Penalize generation 5 instances (e.g., c5, m5, r5)
+apiVersion: karpenter.sh/v1alpha1
+kind: NodeOverlay
+metadata:
+  name: penalize-gen5
+spec:
+  weight: 10
+  requirements:
+    - key: karpenter.k8s.aws/instance-generation
+      operator: In
+      values: ["5"]
+  priceAdjustment: "+45%"
+---
+# Penalize generation 6 instances (e.g., c6g, m6i, r6g)
+apiVersion: karpenter.sh/v1alpha1
+kind: NodeOverlay
+metadata:
+  name: penalize-gen6
+spec:
+  weight: 10
+  requirements:
+    - key: karpenter.k8s.aws/instance-generation
+      operator: In
+      values: ["6"]
+  priceAdjustment: "+30%"
+---
+# Penalize generation 7 instances (e.g., c7g, m7i, r7g)
+apiVersion: karpenter.sh/v1alpha1
+kind: NodeOverlay
+metadata:
+  name: penalize-gen7
+spec:
+  weight: 10
+  requirements:
+    - key: karpenter.k8s.aws/instance-generation
+      operator: In
+      values: ["7"]
+  priceAdjustment: "+15%"
+# Generation 8 instances (e.g., c8g, m8g) will have no penalty,
+# making them the preferred choice when available.
+```
 
 ```sh
 kubectl apply -f node-overlay-generation.yaml
@@ -83,20 +129,20 @@ Wait about one minute for Karpenter to provision the node:
 kubectl get nodeclaims
 ```
 
-You should see a `c8g` instance being launched instead of `c7g`:
+You should see a generation 8 instance (like `c8g`, `m8g`) being launched instead of older generations:
 
 ```console
 NAME            TYPE          ZONE         NODE                                        READY   AGE
 default-xxxxx   c8g.xlarge    eu-west-1b   ip-10-0-xx-xx.eu-west-1.compute.internal    True    45s
 ```
 
-You can verify the NodeOverlay is applied by checking its status:
+You can verify the NodeOverlays are applied by checking their status:
 
 ```sh
-kubectl get nodeoverlay prefer-graviton4 -o yaml
+kubectl get nodeoverlay
 ```
 
-Look for the `Ready=True` condition indicating the overlay is successfully applied.
+Look for the `Ready=True` condition indicating the overlays are successfully applied.
 
 ### Cleanup Scenario 1
 
@@ -107,44 +153,89 @@ kubectl delete -f node-overlay-generation.yaml
 
 ---
 
-## Scenario 2: GPU Slicing with Extended Resources
+## Scenario 2: GPU Time-Slicing with NodeOverlay
 
 ### Overview
 
-GPU instances are expensive, and many inference workloads don't need an entire GPU. Techniques like [NVIDIA Time-Slicing](https://docs.nvidia.com/datacenter/cloud-native/gpu-operator/latest/gpu-sharing.html), [MIG (Multi-Instance GPU)](https://docs.nvidia.com/datacenter/tesla/mig-user-guide/), or [MPS (Multi-Process Service)](https://docs.nvidia.com/deploy/mps/index.html) allow multiple workloads to share a single GPU.
+Many inference and AI/ML workloads don't require an entire GPU. [NVIDIA Time-Slicing](https://docs.nvidia.com/datacenter/cloud-native/gpu-operator/latest/gpu-sharing.html) allows multiple workloads to share a single GPU by rapidly switching context between containers, giving each a "slice" of processing time.
 
-However, Karpenter doesn't natively understand these GPU sharing configurations. By default, it sees `nvidia.com/gpu: 1` as a whole GPU. NodeOverlays solve this by allowing you to add extended resources (like `nvidia.com/gpu-slice`) that represent fractional GPU capacity.
+Bottlerocket has built-in support for GPU time-slicing through its NVIDIA device plugin settings. When configured with `replicas = 4`, a node with 1 physical GPU will advertise `nvidia.com/gpu: 4`, allowing 4 pods to share that GPU.
 
-**Important Clarification**: NodeOverlay only affects Karpenter's scheduling simulation and consolidation decisions. It does NOT:
-- Configure actual GPU slicing on the node
-- Set up time-slicing, MIG, or any GPU sharing mechanism
-- Modify the physical GPU resources
+### Why NodeOverlay?
 
-You are responsible for:
-1. Configuring GPU sharing on your nodes (via NVIDIA device plugin configuration, MIG setup, etc.)
-2. Ensuring your applications are aware they're sharing GPU resources
-3. Setting appropriate resource limits in your workloads
+When time-slicing is configured on nodes, Karpenter doesn't know about the increased capacity until the node exists. This can lead to suboptimal provisioning decisions:
 
-NodeOverlay simply helps Karpenter make better scheduling and consolidation decisions by understanding that a single GPU can serve multiple workloads.
+- Without NodeOverlay: Karpenter sees 4 pending pods requesting `nvidia.com/gpu: 1` each and might provision 4 separate GPU instances
+- With NodeOverlay: Karpenter understands that 1 GPU instance can serve 4 pods, so it provisions just 1 instance
+
+NodeOverlay bridges this gap by informing Karpenter about the effective GPU capacity BEFORE provisioning, enabling:
+- Better initial node selection (right-sizing from the start)
+- Smarter consolidation decisions
+- More accurate cost calculations
 
 ### How It Works
 
-In this example, we'll tell Karpenter that GPU instances have 4 "GPU slices" per physical GPU. This means:
-- A `g5.xlarge` (1 GPU) will be seen as having 4 `nvidia.com/gpu-slice` resources
-- A `g5.2xlarge` (1 GPU) will also have 4 slices
-- A `g5.12xlarge` (4 GPUs) will have 16 slices
+This scenario combines two configurations:
 
-When workloads request `nvidia.com/gpu-slice: 1`, Karpenter understands that 4 such workloads can fit on a single GPU instance.
+1. **EC2NodeClass with time-slicing**: Configures Bottlerocket to enable GPU time-slicing with 4 replicas per GPU
+2. **NodeOverlay**: Tells Karpenter that GPU instances have 4x the GPU capacity
+
+The EC2NodeClass uses Bottlerocket's userData to configure time-slicing:
+
+```yaml
+userData: |
+  [settings.kubelet-device-plugins.nvidia]
+  device-sharing-strategy = "time-slicing"
+  [settings.kubelet-device-plugins.nvidia.time-slicing]
+  replicas = 4
+  rename-by-default = false
+```
+
+The `rename-by-default = false` setting keeps the resource name as `nvidia.com/gpu` (instead of renaming to `nvidia.com/gpu.shared`), so pods can request `nvidia.com/gpu: 1` as usual.
+
+The NodeOverlay tells Karpenter about this capacity:
+
+```yaml
+apiVersion: karpenter.sh/v1alpha1
+kind: NodeOverlay
+metadata:
+  name: gpu-slices-1gpu
+spec:
+  weight: 10
+  requirements:
+    - key: karpenter.k8s.aws/instance-gpu-count
+      operator: In
+      values: ["1"]
+    - key: karpenter.k8s.aws/instance-gpu-manufacturer
+      operator: In
+      values: ["nvidia"]
+  capacity:
+    nvidia.com/gpu: 4
+```
 
 ### Deploy
 
-First, create the NodePool for GPU instances (we'll use the existing `default` EC2NodeClass):
+Before deploying, you need to replace the placeholders in the EC2NodeClass with your cluster-specific values.
+
+If you're using the Terraform template provided in this repo, run the following commands:
 
 ```sh
+export CLUSTER_NAME=$(terraform -chdir="../../cluster/terraform" output -raw cluster_name)
+export KARPENTER_NODE_IAM_ROLE_NAME=$(terraform -chdir="../../cluster/terraform" output -raw node_instance_role_name)
+```
+
+> **NOTE**: If you're not using Terraform, you need to get those values manually. `CLUSTER_NAME` is the name of your EKS cluster (not the ARN). `KARPENTER_NODE_IAM_ROLE_NAME` is the IAM role name that Karpenter nodes will use.
+
+Then replace the placeholders and apply the EC2NodeClass:
+
+```sh
+sed -i '' "s/<<CLUSTER_NAME>>/$CLUSTER_NAME/g" gpu-nodeclass.yaml
+sed -i '' "s/<<KARPENTER_NODE_IAM_ROLE_NAME>>/$KARPENTER_NODE_IAM_ROLE_NAME/g" gpu-nodeclass.yaml
+kubectl apply -f gpu-nodeclass.yaml
 kubectl apply -f gpu-nodepool.yaml
 ```
 
-Now apply the NodeOverlay that adds GPU slice resources. This overlay uses the `karpenter.k8s.aws/instance-gpu-count` label to dynamically calculate slices (4 slices per GPU):
+Now apply the NodeOverlay that informs Karpenter about the GPU capacity:
 
 ```sh
 kubectl apply -f node-overlay-gpu-slices.yaml
@@ -152,13 +243,13 @@ kubectl apply -f node-overlay-gpu-slices.yaml
 
 ### Test 1: Deploy 4 Replicas
 
-Deploy 4 replicas, each requesting 1 GPU slice (1/4 of a GPU):
+Deploy 4 replicas, each requesting 1 GPU (which is actually 1/4 of a physical GPU with time-slicing):
 
 ```sh
 kubectl apply -f workload-gpu-slices.yaml
 ```
 
-Wait for Karpenter to provision the node:
+Wait for Karpenter to provision the node (GPU instances may take 2-3 minutes):
 
 ```sh
 kubectl get nodeclaims -l karpenter.sh/nodepool=gpu-slices
@@ -167,11 +258,23 @@ kubectl get nodeclaims -l karpenter.sh/nodepool=gpu-slices
 You should see a single GPU instance launched:
 
 ```console
-NAME              TYPE          ZONE         NODE                                        READY   AGE
-gpu-slices-xxx    g5.xlarge     eu-west-1a   ip-10-0-xx-xx.eu-west-1.compute.internal    True    60s
+NAME              TYPE           ZONE         NODE                                        READY   AGE
+gpu-slices-xxx    g4dn.xlarge    eu-west-1a   ip-10-0-xx-xx.eu-west-1.compute.internal    True    2m
 ```
 
-All 4 pods should be running on this single node because Karpenter understands that 4 GPU slices fit on 1 GPU.
+Verify the node has 4 GPU resources advertised (due to time-slicing):
+
+```sh
+kubectl get nodes -l karpenter.sh/nodepool=gpu-slices -o jsonpath='{.items[*].status.allocatable.nvidia\.com/gpu}'
+```
+
+You should see `4` (not `1`), confirming time-slicing is working.
+
+Check that all 4 pods are running on this single node:
+
+```sh
+kubectl get pods -l app=workload-gpu-slices -o wide
+```
 
 ### Test 2: Scale to 8 Replicas
 
@@ -185,14 +288,12 @@ Check the nodes:
 kubectl get nodeclaims -l karpenter.sh/nodepool=gpu-slices
 ```
 
-Karpenter should either:
-- Launch a second single-GPU instance, or
-- Replace with a 2-GPU instance (like `g5.2xlarge` if available and cost-effective)
+Karpenter should provision a second GPU instance to handle the additional 4 pods:
 
 ```console
 NAME              TYPE           ZONE         NODE                                        READY   AGE
-gpu-slices-xxx    g5.xlarge      eu-west-1a   ip-10-0-xx-xx.eu-west-1.compute.internal    True    2m
-gpu-slices-yyy    g5.xlarge      eu-west-1b   ip-10-0-yy-yy.eu-west-1.compute.internal    True    30s
+gpu-slices-xxx    g4dn.xlarge    eu-west-1a   ip-10-0-xx-xx.eu-west-1.compute.internal    True    5m
+gpu-slices-yyy    g4dn.xlarge    eu-west-1b   ip-10-0-yy-yy.eu-west-1.compute.internal    True    30s
 ```
 
 ### Test 3: Scale to 17 Replicas
@@ -201,7 +302,7 @@ gpu-slices-yyy    g5.xlarge      eu-west-1b   ip-10-0-yy-yy.eu-west-1.compute.in
 kubectl scale deployment workload-gpu-slices --replicas=17
 ```
 
-With 17 replicas each needing 1 slice, and 4 slices per GPU, Karpenter needs at least 5 GPUs worth of capacity (17/4 = 4.25, rounded up to 5).
+With 17 replicas and 4 slices per GPU, Karpenter needs at least 5 GPUs worth of capacity (17/4 = 4.25, rounded up to 5).
 
 Check the nodes:
 
@@ -209,17 +310,7 @@ Check the nodes:
 kubectl get nodeclaims -l karpenter.sh/nodepool=gpu-slices
 ```
 
-You might see a combination like:
-- Multiple single-GPU instances, or
-- A mix of instance sizes depending on availability and cost optimization
-
-```console
-NAME              TYPE           ZONE         NODE                                        READY   AGE
-gpu-slices-xxx    g5.xlarge      eu-west-1a   ip-10-0-xx-xx.eu-west-1.compute.internal    True    5m
-gpu-slices-yyy    g5.xlarge      eu-west-1b   ip-10-0-yy-yy.eu-west-1.compute.internal    True    3m
-gpu-slices-zzz    g5.2xlarge     eu-west-1c   ip-10-0-zz-zz.eu-west-1.compute.internal    True    45s
-...
-```
+You should see 5 GPU instances provisioned.
 
 ### Cleanup Scenario 2
 
@@ -227,19 +318,20 @@ gpu-slices-zzz    g5.2xlarge     eu-west-1c   ip-10-0-zz-zz.eu-west-1.compute.in
 kubectl delete -f workload-gpu-slices.yaml
 kubectl delete -f node-overlay-gpu-slices.yaml
 kubectl delete -f gpu-nodepool.yaml
+kubectl delete -f gpu-nodeclass.yaml
 ```
 
 ---
 
 ## Key Takeaways
 
-1. **NodeOverlays modify Karpenter's view, not reality**: They affect scheduling simulation only. Actual node configuration (GPU sharing, etc.) must be done separately.
+1. **NodeOverlay informs Karpenter's scheduling simulation**: It helps Karpenter make better provisioning decisions by understanding capacity before nodes exist. The actual node configuration must match what NodeOverlay declares.
 
 2. **Price adjustments work best with On-Demand**: For Spot instances, EC2's capacity-optimized strategy may override your price preferences.
 
-3. **Extended resources enable smarter bin-packing**: By telling Karpenter about fractional resources, it can make better decisions about how many workloads fit on a node.
+3. **GPU time-slicing requires both NodeOverlay and node configuration**: NodeOverlay tells Karpenter about the capacity, while the EC2NodeClass userData configures actual time-slicing on Bottlerocket nodes.
 
-4. **GPU sharing requires additional setup**: If you're using GPU slices, you must configure the actual GPU sharing mechanism (time-slicing, MIG, etc.) on your nodes and ensure your applications are compatible.
+4. **Bottlerocket simplifies GPU time-slicing**: Unlike other AMIs that require the full NVIDIA GPU Operator, Bottlerocket has built-in support for time-slicing via userData settings.
 
 5. **NodeOverlays integrate with consolidation**: Price and capacity changes affect consolidation decisions, potentially triggering node replacements when configurations change.
 

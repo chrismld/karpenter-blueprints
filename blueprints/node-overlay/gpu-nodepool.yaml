@@ -1,7 +1,8 @@
 # NodePool for GPU instances with slicing support
 # This NodePool allows both p (performance) and g (graphics) instance categories
 # which include various GPU instance types.
-# It references the default EC2NodeClass.
+# It references the gpu-bottlerocket EC2NodeClass which uses Bottlerocket AMI
+# with pre-configured NVIDIA device plugin.
 apiVersion: karpenter.sh/v1
 kind: NodePool
 metadata:
@@ -23,7 +24,7 @@ spec:
       expireAfter: 720h
       nodeClassRef:
         group: karpenter.k8s.aws
-        name: default
+        name: gpu-bottlerocket
         kind: EC2NodeClass
       requirements:
         - key: karpenter.sh/capacity-type

@@ -1,12 +1,11 @@
-# Sample workload requesting fractional GPU (1/4 of a GPU)
+# Sample workload requesting a GPU slice (1/4 of a GPU)
 #
-# This deployment requests nvidia.com/gpu-slice: 1, which represents
-# 1/4 of a physical GPU. With the NodeOverlay configured, Karpenter
-# understands that 4 of these pods can fit on a single GPU instance.
+# This deployment requests nvidia.com/gpu: 1. With time-slicing configured
+# on the EC2NodeClass (replicas = 4), the node advertises nvidia.com/gpu: 4
+# for a single physical GPU. This means 4 pods can share one GPU instance.
 #
-# IMPORTANT: This workload assumes you have configured GPU sharing
-# (time-slicing, MIG, etc.) on your nodes. The NodeOverlay only
-# affects Karpenter's scheduling decisions, not actual GPU allocation.
+# The NodeOverlay tells Karpenter about this capacity BEFORE provisioning,
+# enabling better scheduling decisions and consolidation.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -36,6 +35,5 @@ spec:
           requests:
             cpu: 500m
             memory: 1Gi
-            nvidia.com/gpu-slice: 1
           limits:
-            nvidia.com/gpu-slice: 1
+            nvidia.com/gpu: 1
