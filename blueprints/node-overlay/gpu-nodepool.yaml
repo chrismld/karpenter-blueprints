@@ -12,7 +12,7 @@ metadata:
   name: gpu-slices
 spec:
   disruption:
-    consolidationPolicy: WhenEmptyOrUnderutilized
+    consolidationPolicy: WhenEmpty
     consolidateAfter: 5m
   limits:
     cpu: 100
