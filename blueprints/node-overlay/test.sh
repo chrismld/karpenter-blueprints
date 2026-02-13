@@ -64,7 +64,9 @@ wait_for_nodeclaim() {
     log_info "Waiting for $expected_count nodeclaim(s) with selector '$label_selector' to be ready..."
     
     while [ $elapsed -lt $timeout ]; do
-        ready_count=$(kubectl get nodeclaims -l "$label_selector" --no-headers 2>/dev/null | grep -c "True" || echo "0")
+        ready_count=$(kubectl get nodeclaims -l "$label_selector" --no-headers 2>/dev/null | grep -c "True" || true)
+        ready_count=${ready_count:-0}
+        ready_count=$((ready_count + 0))  # Force integer
         if [ "$ready_count" -ge "$expected_count" ]; then
             log_info "$ready_count nodeclaim(s) ready"
             return 0
@@ -89,7 +91,9 @@ wait_for_pods() {
     log_info "Waiting for $expected_count pod(s) with selector '$label_selector' to be running..."
     
     while [ $elapsed -lt $timeout ]; do
-        running_count=$(kubectl get pods -l "$label_selector" --no-headers 2>/dev/null | grep -c "Running" || echo "0")
+        running_count=$(kubectl get pods -l "$label_selector" --no-headers 2>/dev/null | grep -c "Running" || true)
+        running_count=${running_count:-0}
+        running_count=$((running_count + 0))  # Force integer
         if [ "$running_count" -ge "$expected_count" ]; then
             log_info "$running_count pod(s) running"
             return 0
@@ -176,12 +180,17 @@ test_scenario1() {
 test_scenario2() {
     log_test "=== SCENARIO 2: GPU Time-Slicing ==="
     
-    # Check environment variables
-    if [ -z "$CLUSTER_NAME" ] || [ -z "$KARPENTER_NODE_IAM_ROLE_NAME" ]; then
-        log_error "CLUSTER_NAME and KARPENTER_NODE_IAM_ROLE_NAME must be set"
-        log_info "Run: export CLUSTER_NAME=... && export KARPENTER_NODE_IAM_ROLE_NAME=..."
-        return 1
+    # Check environment variables - use defaults if not set
+    if [ -z "$CLUSTER_NAME" ]; then
+        export CLUSTER_NAME="karpenter-blueprints"
+        log_warn "CLUSTER_NAME not set, using default: $CLUSTER_NAME"
     fi
+    if [ -z "$KARPENTER_NODE_IAM_ROLE_NAME" ]; then
+        export KARPENTER_NODE_IAM_ROLE_NAME="karpenter-blueprints"
+        log_warn "KARPENTER_NODE_IAM_ROLE_NAME not set, using default: $KARPENTER_NODE_IAM_ROLE_NAME"
+    fi
+    
+    log_info "Using cluster: $CLUSTER_NAME, IAM role: $KARPENTER_NODE_IAM_ROLE_NAME"
     
     cleanup_scenario2
     
