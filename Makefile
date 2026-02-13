@@ -5,20 +5,18 @@
 #   make test-node-overlay       # Run node-overlay blueprint tests
 #   make test BLUEPRINT=node-overlay  # Alternative way to test specific blueprint
 #   make list-blueprints         # List all blueprints with test.sh
-#   make env                     # Export cluster environment variables
+#   make env                     # Show cluster environment variables
 
 .PHONY: help test test-all list-blueprints env clean
 
-# Terraform directory
-TF_DIR := cluster/terraform
+# Default values (from cluster/terraform template)
+# These match the Terraform template defaults for maintainers
+DEFAULT_CLUSTER_NAME := karpenter-blueprints
+DEFAULT_NODE_ROLE_NAME := karpenter-blueprints
 
-# Auto-detect environment variables from Terraform if not set
-ifndef CLUSTER_NAME
-  CLUSTER_NAME := $(shell terraform -chdir=$(TF_DIR) output -raw cluster_name 2>/dev/null)
-endif
-ifndef KARPENTER_NODE_IAM_ROLE_NAME
-  KARPENTER_NODE_IAM_ROLE_NAME := $(shell terraform -chdir=$(TF_DIR) output -raw node_instance_role_name 2>/dev/null)
-endif
+# Use environment variables if set, otherwise use defaults
+CLUSTER_NAME ?= $(DEFAULT_CLUSTER_NAME)
+KARPENTER_NODE_IAM_ROLE_NAME ?= $(DEFAULT_NODE_ROLE_NAME)
 
 # Export for child processes
 export CLUSTER_NAME
@@ -32,20 +30,15 @@ help:
 	@echo "  make test BLUEPRINT=<name>        Run tests for a specific blueprint"
 	@echo "  make test-<blueprint-name>        Run tests for a specific blueprint"
 	@echo "  make list-blueprints              List all blueprints with test.sh"
-	@echo "  make env                          Show environment variables status"
+	@echo "  make env                          Show environment variables"
 	@echo "  make clean                        Clean up any test artifacts"
 	@echo ""
 	@echo "Examples:"
 	@echo "  make test-node-overlay            Test the node-overlay blueprint"
 	@echo "  make test BLUEPRINT=node-overlay  Same as above"
 	@echo ""
-	@echo "Prerequisites:"
-	@echo "  - kubectl configured with EKS cluster access"
-	@echo "  - Terraform state in cluster/terraform (for auto-detection)"
-	@echo "    OR CLUSTER_NAME and KARPENTER_NODE_IAM_ROLE_NAME env vars set"
-	@echo ""
-	@echo "Environment variables are auto-detected from Terraform if available."
-	@echo "Run 'make env' to see current values."
+	@echo "Default cluster: $(DEFAULT_CLUSTER_NAME)"
+	@echo "Override with: CLUSTER_NAME=my-cluster make test"
 
 # List all blueprints that have test.sh
 list-blueprints:
@@ -54,22 +47,14 @@ list-blueprints:
 
 # Show environment variable status
 env:
-	@echo "Environment Variables (auto-detected from Terraform if not set):"
+	@echo "Environment Variables:"
 	@echo ""
-	@if [ -z "$(CLUSTER_NAME)" ]; then \
-		echo "  CLUSTER_NAME: (not set - Terraform state not found)"; \
-	else \
-		echo "  CLUSTER_NAME: $(CLUSTER_NAME)"; \
-	fi
-	@if [ -z "$(KARPENTER_NODE_IAM_ROLE_NAME)" ]; then \
-		echo "  KARPENTER_NODE_IAM_ROLE_NAME: (not set - Terraform state not found)"; \
-	else \
-		echo "  KARPENTER_NODE_IAM_ROLE_NAME: $(KARPENTER_NODE_IAM_ROLE_NAME)"; \
-	fi
+	@echo "  CLUSTER_NAME: $(CLUSTER_NAME)"
+	@echo "  KARPENTER_NODE_IAM_ROLE_NAME: $(KARPENTER_NODE_IAM_ROLE_NAME)"
 	@echo ""
-	@echo "To override, export manually before running make:"
-	@echo "  export CLUSTER_NAME=my-cluster"
-	@echo "  export KARPENTER_NODE_IAM_ROLE_NAME=my-role"
+	@echo "Defaults: $(DEFAULT_CLUSTER_NAME) / $(DEFAULT_NODE_ROLE_NAME)"
+	@echo ""
+	@echo "To override: export CLUSTER_NAME=my-cluster KARPENTER_NODE_IAM_ROLE_NAME=my-role"
 
 # Run all blueprint tests
 test-all test:
