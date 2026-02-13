@@ -3,6 +3,9 @@
 # which include various GPU instance types.
 # It references the gpu-bottlerocket EC2NodeClass which uses Bottlerocket AMI
 # with pre-configured NVIDIA device plugin.
+#
+# NOTE: With time-slicing enabled (4 replicas per GPU), each physical GPU
+# is advertised as 4 nvidia.com/gpu resources. The limit below accounts for this.
 apiVersion: karpenter.sh/v1
 kind: NodePool
 metadata:
@@ -14,7 +17,7 @@ spec:
   limits:
     cpu: 100
     memory: 200Gi
-    nvidia.com/gpu: 10
+    nvidia.com/gpu: 40  # Allows up to 10 physical GPUs (10 × 4 time-sliced = 40)
   template:
     metadata:
       labels:
