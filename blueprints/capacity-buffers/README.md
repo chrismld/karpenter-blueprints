@@ -295,7 +295,7 @@ Let's suppose you run a GPU inference service, and it needs to scale out as soon
 
 A GPU `CapacityBuffer` front-loads all of it. The node launches, drivers install, and the device plugin finishes registering the GPU before any real pod needs it.
 
-This blueprint uses [Bottlerocket](https://karpenter.sh/docs/concepts/nodeclasses/#specamifamily), which ships the NVIDIA driver and device plugin pre-installed on its accelerated AMI variant. No separate device plugin install is needed, unlike AMI families such as AL2023 where you'd install the [NVIDIA device plugin](https://github.com/NVIDIA/k8s-device-plugin) yourself (see the [`nvidia-gpu-workload`](../nvidia-gpu-workload/) blueprint for that path). Karpenter's `bottlerocket` alias automatically resolves to the correct GPU-enabled variant for GPU instance types, so the `EC2NodeClass` needs no extra configuration beyond the alias itself.
+This blueprint uses [Bottlerocket](https://karpenter.sh/docs/concepts/nodeclasses/#specamifamily), which ships the NVIDIA driver and device plugin pre-installed on its accelerated AMI variant. Karpenter's `bottlerocket` alias automatically resolves to the correct GPU-enabled variant for GPU instance types, so the `EC2NodeClass` needs no extra configuration beyond the alias itself.
 
 The goal of this scenario isn't to demonstrate a specific instance type. It's to show that once a GPU node is `Ready`, scale-out is near-instant regardless of which instance you land on. So the `NodePool` allows both spot and on-demand, and stays open across the entire `g` and `p` instance categories rather than pinning specific instance types, to maximize the odds of getting capacity quickly rather than waiting on one specific type:
 
@@ -358,13 +358,7 @@ Real pods get `requests.nvidia.com/gpu` auto-defaulted from `limits` by API serv
 <details>
 <summary>What pre-warming doesn't cover, and how to close the gap</summary>
 
-Buffer virtual pods never reach kubelet, so a buffer only pre-warms node-level things (OS, drivers, device plugins). It doesn't pull your container image or download model weights, which are often the bigger share of GPU cold-start latency.
-
-Close that gap on the same `EC2NodeClass`, using the [AI on EKS container startup guide](https://awslabs.github.io/ai-on-eks/docs/guidance/container-startup-time):
-- [SOCI snapshotter](https://awslabs.github.io/ai-on-eks/docs/guidance/container-startup-time/accelerate-pull-process/containerd-snapshotter) parallelizes the pull/unpack instead of eliminating it. See this repo's [`soci-snapshotter`](../soci-snapshotter/) blueprint (70-80% faster pulls measured on a 9GB image).
-- [Pre-baking images into a Bottlerocket data volume via EBS snapshot](https://awslabs.github.io/ai-on-eks/docs/guidance/container-startup-time/accelerate-pull-process/prefecthing-images-on-br) skips the pull entirely, referenced from `blockDeviceMappings.ebs.snapshotID`.
-
-Model weights outside the image (S3, FSx) still need their own fetch on the real pod, an init container or CSI mount, since the buffer never runs anything.
+Buffer virtual pods never reach kubelet, so a buffer only pre-warms node-level things (OS, drivers, device plugins). It doesn't pull your container image or download model weights, which are often the bigger share of GPU cold-start latency, and closing that gap on the same `EC2NodeClass` depends on your workload (image size, model size, how often either changes). See the [AI on EKS container startup guide](https://awslabs.github.io/ai-on-eks/docs/guidance/container-startup-time) for the available strategies and their trade-offs.
 </details>
 
 ### Results
@@ -381,7 +375,7 @@ Once the node is `Ready`, confirm the device plugin has finished registering the
 kubectl get nodes -l intent=gpu-capacity-buffer -o jsonpath='{.items[0].status.allocatable.nvidia\.com/gpu}'
 ```
 
-You should see `1` (or more), proving the full driver and device-plugin cycle already completed on an idle node, with no device plugin install step of your own.
+You should see `1` (or more), proving the full driver and device-plugin cycle already completed on an idle node.
 
 Deploy the real GPU workload:
 
@@ -436,7 +430,7 @@ Deploy the buffer, starting at 0 replicas:
 kubectl apply -f capacity-buffer-forecast.yaml
 ```
 
-`forecast-predictor.sh` stands in for the predictive scaler. Internally, it runs a `kubectl patch` against the buffer's `spec.replicas` to the forecast value, then waits to simulate the forecast lead time:
+`forecast-predictor.sh` stands in for the predictive scaler. Internally, it runs a `kubectl patch` against the buffer's `spec.replicas` to the forecast value, then waits to simulate the forecast lead time. The arguments below tell it to patch the `forecast-driven-buffer` `CapacityBuffer` to 5 replicas, then wait 90 seconds before returning, simulating a forecast made 90 seconds ahead of the real demand:
 
 ```sh
 ./forecast-predictor.sh forecast-driven-buffer 5 90
@@ -483,7 +477,7 @@ kubectl delete -f capacity-buffer-forecast.yaml
 4. Drift and expiry still apply. Buffers aren't exempt from cost or lifecycle disruption. They self-heal by re-provisioning to keep the buffer satisfied.
 5. `scalableRef` and `percentage` track current workload size, not a forecast. For predictive or forecast-driven pre-provisioning, drive `replicas` directly through `podTemplateRef`.
 6. Cap GPU (or any expensive) buffers with `spec.limits`. Otherwise a buffer can hold indefinitely warm, indefinitely billed capacity.
-7. A buffer only pre-warms what's node-level: the OS, drivers, and device plugins. Image pulls and model weights are workload-level and only happen once a real pod lands. Close that gap on the same `EC2NodeClass`, with SOCI snapshotter or a pre-baked Bottlerocket data volume, rather than trying to solve it through the buffer itself.
+7. A buffer only pre-warms what's node-level: the OS, drivers, and device plugins. Image pulls and model weights are workload-level and only happen once a real pod lands. Close that gap on the same `EC2NodeClass`, choosing a strategy for your workload from the [AI on EKS container startup guide](https://awslabs.github.io/ai-on-eks/docs/guidance/container-startup-time).
 8. This is alpha and not supported on EKS Auto Mode. Treat it as a pattern to evaluate, not yet a default for production, without validating your alpha-API risk tolerance.
 
 ## Full Cleanup
