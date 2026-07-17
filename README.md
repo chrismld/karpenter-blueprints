@@ -158,7 +158,8 @@ Here's the list of blueprints we have so far:
 | [Split Between On-Demand & Spot Instances](/blueprints/od-spot-split/) | ✅ | ✅ |
 | [Prioritize Reserved Capacity with Savings Plans and/or Reserved Instances](/blueprints/reserved-capacity/) | ✅ | ✅ |
 | [Working with Graviton Instances](/blueprints/graviton) | ✅ | ✅ |
-| [Overprovision capacity in advance to increase responsiveness](/blueprints/overprovision/) | ✅ | ✅ |
+| [Pre-provision spare capacity with CapacityBuffers](/blueprints/capacity-buffers/) | ✅ | ❌ |
+| [Overprovision capacity in advance to increase responsiveness (EKS Auto Mode)](/blueprints/overprovision/) | ❌ | ✅ |
 | [Using multiple EBS volumes](/blueprints/multi-ebs/) | ✅ | ❌ |
 | [Working with Stateful Workloads using EBS](/blueprints/stateful/) | ✅ | ✅ |
 | [Update Nodes using Drift](/blueprints/update-nodes-with-drift/) | ✅ | ✅ |
