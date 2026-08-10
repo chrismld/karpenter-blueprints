@@ -54,24 +54,13 @@ You should see `CapacityBuffer=true` in the output.
 
 ## Deploy
 
-Before applying the manifests, set your cluster-specific variables. If you're using the Terraform template provided in this repo, run the following commands:
+Deploy the shared `NodePool` used across Scenarios 1, 2, and 4:
 
 ```sh
-export CLUSTER_NAME=$(terraform -chdir="../../cluster/terraform" output -raw cluster_name)
-export KARPENTER_NODE_IAM_ROLE_NAME=$(terraform -chdir="../../cluster/terraform" output -raw node_instance_role_name)
-```
-
-> ***NOTE***: If you're not using Terraform, you need to get those values manually. `CLUSTER_NAME` is the name of your EKS cluster (not the ARN). Karpenter auto-generates the [instance profile](https://docs.aws.amazon.com/IAM/latest/UserGuide/id_roles_use_switch-role-ec2_instance-profiles) in your `EC2NodeClass` given the role that you specify in [spec.role](https://karpenter.sh/docs/concepts/nodeclasses/) with the placeholder `KARPENTER_NODE_IAM_ROLE_NAME`, which is a way to pass a single IAM role to the EC2 instance launched by the Karpenter `NodePool`. Typically, the instance profile name is the same as the IAM role (not the ARN).
-
-Deploy the shared `NodePool` and `EC2NodeClass` used across Scenarios 1, 2, and 4:
-
-```sh
-sed -i '' "s/<<CLUSTER_NAME>>/$CLUSTER_NAME/g" nodepool.yaml
-sed -i '' "s/<<KARPENTER_NODE_IAM_ROLE_NAME>>/$KARPENTER_NODE_IAM_ROLE_NAME/g" nodepool.yaml
 kubectl apply -f nodepool.yaml
 ```
 
-This creates a `NodePool` and `EC2NodeClass` named `capacity-buffer`, tainted so only pods that tolerate `intent=capacity-buffer` land there:
+This creates a `NodePool` named `capacity-buffer`, tainted so only pods that tolerate `intent=capacity-buffer` land there. It reuses the cluster's `default` `EC2NodeClass` (one of this blueprint's requirements), since nothing about these scenarios needs a different AMI or networking setup:
 
 ```yaml
 apiVersion: karpenter.sh/v1
@@ -81,6 +70,10 @@ metadata:
 spec:
   template:
     spec:
+      nodeClassRef:
+        group: karpenter.k8s.aws
+        name: default
+        kind: EC2NodeClass
       taints:
         - key: intent
           value: capacity-buffer
@@ -94,7 +87,7 @@ spec:
           values: ["c", "m", "r"]
 ```
 
-Scenario 3 (GPU) uses its own dedicated `NodePool`/`EC2NodeClass` (`gpu-nodepool.yaml`) and is deployed separately within that scenario's steps below.
+Scenario 3 (GPU) is the exception. It uses its own dedicated `NodePool`/`EC2NodeClass` (`gpu-nodepool.yaml`) because it needs a different AMI, and it's deployed separately within that scenario's steps below.
 
 ## How CapacityBuffers Connect to a NodePool
 
@@ -336,6 +329,15 @@ spec:
   limits:
     nvidia.com/gpu: "2"
 ```
+
+Unlike the shared `NodePool`, `gpu-nodepool.yaml` ships its own `EC2NodeClass`, so it needs your cluster-specific values. If you're using the Terraform template provided in this repo, run the following commands:
+
+```sh
+export CLUSTER_NAME=$(terraform -chdir="../../cluster/terraform" output -raw cluster_name)
+export KARPENTER_NODE_IAM_ROLE_NAME=$(terraform -chdir="../../cluster/terraform" output -raw node_instance_role_name)
+```
+
+> ***NOTE***: If you're not using Terraform, you need to get those values manually. `CLUSTER_NAME` is the name of your EKS cluster (not the ARN). Karpenter auto-generates the [instance profile](https://docs.aws.amazon.com/IAM/latest/UserGuide/id_roles_use_switch-role-ec2_instance-profiles) in your `EC2NodeClass` given the role that you specify in [spec.role](https://karpenter.sh/docs/concepts/nodeclasses/) with the placeholder `KARPENTER_NODE_IAM_ROLE_NAME`, which is a way to pass a single IAM role to the EC2 instance launched by the Karpenter `NodePool`. Typically, the instance profile name is the same as the IAM role (not the ARN).
 
 Deploy the GPU `NodePool`, `PodTemplate`, and buffer:
 

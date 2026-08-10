@@ -75,44 +75,25 @@ check_prerequisites() {
 
 # Prepare the shared NodePool/EC2NodeClass used by scenarios 1, 2, and 4
 deploy_shared_nodepool() {
-    log_info "Deploying shared NodePool and EC2NodeClass..."
-    sed "s/<<CLUSTER_NAME>>/$CLUSTER_NAME/g; s/<<KARPENTER_NODE_IAM_ROLE_NAME>>/$KARPENTER_NODE_IAM_ROLE_NAME/g" nodepool.yaml > /tmp/capacity-buffer-nodepool-test.yaml
-    kubectl apply -f /tmp/capacity-buffer-nodepool-test.yaml
+    log_info "Deploying shared NodePool (reuses the cluster's default EC2NodeClass)..."
+    kubectl apply -f nodepool.yaml
     kubectl apply -f podtemplate.yaml
 
-    # Wait for the EC2NodeClass to be Ready before proceeding. If the previous
-    # scenario's EC2NodeClass with the same name was still terminating, the
-    # NodePool can transiently fail to resolve it ("Failed resolving NodeClass").
-    log_info "Waiting for EC2NodeClass/capacity-buffer to be Ready..."
-    local elapsed=0
-    while [ $elapsed -lt 60 ]; do
-        ready=$(kubectl get ec2nodeclass capacity-buffer -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || echo "")
-        if [ "$ready" == "True" ]; then
-            break
-        fi
-        sleep 5
-        elapsed=$((elapsed + 5))
-    done
+    # The NodePool references the cluster's shared 'default' EC2NodeClass, so
+    # there's no per-scenario EC2NodeClass lifecycle to wait on here. Just
+    # confirm the referenced NodeClass is Ready.
+    log_info "Verifying EC2NodeClass/default is Ready..."
+    local ready
+    ready=$(kubectl get ec2nodeclass default -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || echo "")
     if [ "$ready" != "True" ]; then
-        log_warn "EC2NodeClass/capacity-buffer did not report Ready within 60s, continuing anyway"
+        log_error "EC2NodeClass/default is not Ready. The blueprint requires the repo's default EC2NodeClass."
+        exit 1
     fi
 }
 
 cleanup_shared_nodepool() {
-    kubectl delete -f /tmp/capacity-buffer-nodepool-test.yaml --ignore-not-found=true 2>/dev/null || true
+    kubectl delete -f nodepool.yaml --ignore-not-found=true 2>/dev/null || true
     kubectl delete -f podtemplate.yaml --ignore-not-found=true 2>/dev/null || true
-
-    # Wait for the EC2NodeClass to be fully gone before the next scenario
-    # recreates one with the same name, to avoid a "Failed resolving
-    # NodeClass" race on the NodePool.
-    local elapsed=0
-    while [ $elapsed -lt 60 ]; do
-        if ! kubectl get ec2nodeclass capacity-buffer &>/dev/null; then
-            return 0
-        fi
-        sleep 5
-        elapsed=$((elapsed + 5))
-    done
 }
 
 # Wait for a CapacityBuffer to report Provisioning=True

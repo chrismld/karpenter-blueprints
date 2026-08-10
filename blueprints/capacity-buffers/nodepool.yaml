@@ -11,9 +11,13 @@ spec:
       labels:
         intent: capacity-buffer
     spec:
+      # Reuses the cluster's shared 'default' EC2NodeClass (created by the
+      # repo's cluster template). Nothing about scenarios 1, 2, and 4 needs a
+      # different AMI or networking setup, so no dedicated EC2NodeClass is
+      # required. The GPU scenario is the exception, see gpu-nodepool.yaml.
       nodeClassRef:
         group: karpenter.k8s.aws
-        name: capacity-buffer
+        name: default
         kind: EC2NodeClass
       requirements:
         - key: karpenter.sh/capacity-type
@@ -33,18 +37,3 @@ spec:
   disruption:
     consolidationPolicy: WhenEmptyOrUnderutilized
     consolidateAfter: 1m
----
-apiVersion: karpenter.k8s.aws/v1
-kind: EC2NodeClass
-metadata:
-  name: capacity-buffer
-spec:
-  amiSelectorTerms:
-  - alias: bottlerocket@latest
-  role: "<<KARPENTER_NODE_IAM_ROLE_NAME>>"
-  securityGroupSelectorTerms:
-  - tags:
-      karpenter.sh/discovery: <<CLUSTER_NAME>>
-  subnetSelectorTerms:
-  - tags:
-      karpenter.sh/discovery: <<CLUSTER_NAME>>
