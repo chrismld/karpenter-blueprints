@@ -7,7 +7,9 @@
 # - Karpenter installed with NodeOverlay feature gate enabled
 # - Environment variables set: CLUSTER_NAME, KARPENTER_NODE_IAM_ROLE_NAME
 #
-# Usage: ./test.sh [scenario1|scenario2|all]
+# Usage: ./test.sh [scenario1|scenario2|scenario2b|scenario3|all]
+# Scenario 2b launches a MIG-capable P-family GPU instance (expensive) and
+# is skipped in "all" unless RUN_MIG_TESTS=1.
 
 set -e
 
@@ -120,6 +122,15 @@ cleanup_scenario2() {
     kubectl delete -f node-overlay-gpu-slices.yaml --ignore-not-found=true 2>/dev/null || true
     kubectl delete -f gpu-nodepool.yaml --ignore-not-found=true 2>/dev/null || true
     kubectl delete -f gpu-nodeclass.yaml --ignore-not-found=true 2>/dev/null || true
+    sleep 10
+}
+
+cleanup_scenario2b() {
+    log_info "Cleaning up Scenario 2b..."
+    kubectl delete -f workload-mig.yaml --ignore-not-found=true 2>/dev/null || true
+    kubectl delete -f node-overlay-mig.yaml --ignore-not-found=true 2>/dev/null || true
+    kubectl delete -f mig-nodepool.yaml --ignore-not-found=true 2>/dev/null || true
+    kubectl delete -f mig-nodeclass.yaml --ignore-not-found=true 2>/dev/null || true
     sleep 10
 }
 
@@ -305,6 +316,86 @@ test_scenario2() {
 }
 
 # ============================================================================
+# SCENARIO 2b: GPU MIG Partitioning (gated: launches a P-family GPU instance)
+# ============================================================================
+test_scenario2b() {
+    log_test "=== SCENARIO 2b: GPU MIG Partitioning ==="
+
+    if [ "$RUN_MIG_TESTS" != "1" ]; then
+        log_warn "Skipping Scenario 2b: it launches a MIG-capable P-family GPU"
+        log_warn "instance, which is expensive. Set RUN_MIG_TESTS=1 to run it."
+        return 0
+    fi
+
+    if [ -z "$CLUSTER_NAME" ]; then
+        export CLUSTER_NAME="karpenter-blueprints"
+        log_warn "CLUSTER_NAME not set, using default: $CLUSTER_NAME"
+    fi
+    if [ -z "$KARPENTER_NODE_IAM_ROLE_NAME" ]; then
+        export KARPENTER_NODE_IAM_ROLE_NAME="karpenter-blueprints"
+        log_warn "KARPENTER_NODE_IAM_ROLE_NAME not set, using default: $KARPENTER_NODE_IAM_ROLE_NAME"
+    fi
+
+    cleanup_scenario2b
+
+    log_info "Preparing MIG EC2NodeClass..."
+    sed "s/<<CLUSTER_NAME>>/$CLUSTER_NAME/g; s/<<KARPENTER_NODE_IAM_ROLE_NAME>>/$KARPENTER_NODE_IAM_ROLE_NAME/g" mig-nodeclass.yaml > /tmp/mig-nodeclass-test.yaml
+
+    log_info "Deploying MIG EC2NodeClass, NodePool and NodeOverlays..."
+    kubectl apply -f /tmp/mig-nodeclass-test.yaml
+    kubectl apply -f mig-nodepool.yaml
+    kubectl apply -f node-overlay-mig.yaml
+
+    sleep 5
+    overlay_count=$(kubectl get nodeoverlay --no-headers 2>/dev/null | grep -cE "mig-h100-1gpu|mig-8gpu" || true)
+    if [ "$overlay_count" -lt 2 ]; then
+        log_error "Expected 2 MIG NodeOverlays, found $overlay_count"
+        cleanup_scenario2b
+        return 1
+    fi
+
+    # --- TEST: 4 replicas requesting 1 slice each should fit on 1 node ---
+    log_test "--- Test: 4 MIG slices should fit on 1 MIG-capable node ---"
+    kubectl apply -f workload-mig.yaml
+
+    if ! wait_for_nodeclaim "karpenter.sh/nodepool=gpu-mig" 1; then
+        log_error "Test failed: No MIG node provisioned (check MIG-capable instance capacity in this region)"
+        cleanup_scenario2b
+        return 1
+    fi
+
+    sleep 30
+    if ! wait_for_pods "app=workload-mig" 4; then
+        log_error "Test failed: Pods not running"
+        cleanup_scenario2b
+        return 1
+    fi
+
+    # Verify MIG partitioning: node should advertise (physical GPUs x 4) slices.
+    # Which instance Karpenter picks depends on regional availability
+    # (p5.4xlarge -> 1 GPU -> 4; p4d.24xlarge -> 8 GPUs -> 32).
+    gpu_physical=$(kubectl get nodeclaims -l karpenter.sh/nodepool=gpu-mig -o jsonpath='{.items[0].metadata.labels.karpenter\.k8s\.aws/instance-gpu-count}' 2>/dev/null || echo "0")
+    expected_capacity=$((gpu_physical * 4))
+    gpu_capacity=$(kubectl get nodes -l karpenter.sh/nodepool=gpu-mig -o jsonpath='{.items[0].status.allocatable.nvidia\.com/gpu}' 2>/dev/null || echo "0")
+    if [ "$gpu_capacity" != "$expected_capacity" ]; then
+        log_warn "Expected GPU capacity $expected_capacity ($gpu_physical physical GPUs x 4 MIG slices), got $gpu_capacity"
+    fi
+
+    node_count=$(kubectl get nodeclaims -l karpenter.sh/nodepool=gpu-mig --no-headers 2>/dev/null | grep -c "True" || echo "0")
+    instance_type=$(kubectl get nodeclaims -l karpenter.sh/nodepool=gpu-mig -o jsonpath='{.items[0].metadata.labels.node\.kubernetes\.io/instance-type}' 2>/dev/null || echo "unknown")
+    if [ "$node_count" -eq 1 ]; then
+        log_test "✅ PASSED: 4 MIG slice pods running on 1 node ($instance_type, nvidia.com/gpu=$gpu_capacity)"
+        cleanup_scenario2b
+        log_test "=== SCENARIO 2b: PASSED ==="
+        return 0
+    else
+        log_error "❌ FAILED: Expected 1 node, got $node_count"
+        cleanup_scenario2b
+        return 1
+    fi
+}
+
+# ============================================================================
 # SCENARIO 3: Targeting Specific NodePools
 # ============================================================================
 test_scenario3() {
@@ -446,16 +537,23 @@ main() {
         scenario2)
             test_scenario2 || exit_code=1
             ;;
+        scenario2b)
+            RUN_MIG_TESTS=1
+            test_scenario2b || exit_code=1
+            ;;
         scenario3)
             test_scenario3 || exit_code=1
             ;;
         all)
             test_scenario1 || exit_code=1
             test_scenario2 || exit_code=1
+            test_scenario2b || exit_code=1
             test_scenario3 || exit_code=1
             ;;
         *)
-            echo "Usage: $0 [scenario1|scenario2|scenario3|all]"
+            echo "Usage: $0 [scenario1|scenario2|scenario2b|scenario3|all]"
+            echo "  scenario2b launches a MIG-capable P-family GPU instance (expensive);"
+            echo "  in 'all' it is skipped unless RUN_MIG_TESTS=1."
             exit 1
             ;;
     esac

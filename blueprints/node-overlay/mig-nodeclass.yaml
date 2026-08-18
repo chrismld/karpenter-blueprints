@@ -1,0 +1,54 @@
+# EC2NodeClass for MIG-partitioned GPU instances using Bottlerocket.
+#
+# Bottlerocket supports NVIDIA Multi-Instance GPU (MIG) natively through
+# userData settings (no GPU Operator required). MIG provides hardware
+# partitions with dedicated memory and SMs per slice: memory AND fault
+# isolation, unlike time-slicing or MPS.
+#
+# Two things to know about Bottlerocket's MIG support:
+#
+# 1. The profile map is keyed by GPU model ("{model}.{memory}"). It only
+#    affects GPUs that match a key. Nodes from this NodeClass whose GPUs
+#    are not listed below boot with no partitioning, so a broad NodePool
+#    can safely reference this NodeClass: only the models you list get
+#    partitioned.
+#
+# 2. This is the device plugin's "single" strategy: one profile per GPU
+#    model, applied to all GPUs on the node, advertised as plain
+#    nvidia.com/gpu with the multiplied count. Mixed per-profile resources
+#    (nvidia.com/mig-1g.5gb etc.) require the NVIDIA device plugin in
+#    mixed mode (GPU Operator), which is outside this blueprint's scope.
+#
+# Caveat from the Bottlerocket docs: when MIG is enabled, NVLink is NOT
+# supported. A MIG-partitioned node cannot also run tensor-parallel
+# workloads that need NVLink. MPS and MIG are mutually exclusive.
+apiVersion: karpenter.k8s.aws/v1
+kind: EC2NodeClass
+metadata:
+  name: gpu-bottlerocket-mig
+spec:
+  amiSelectorTerms:
+    - alias: bottlerocket@latest
+  role: "<<KARPENTER_NODE_IAM_ROLE_NAME>>"
+  securityGroupSelectorTerms:
+    - tags:
+        karpenter.sh/discovery: "<<CLUSTER_NAME>>"
+  subnetSelectorTerms:
+    - tags:
+        karpenter.sh/discovery: "<<CLUSTER_NAME>>"
+  tags:
+    intent: gpu-workloads
+    karpenter.sh/discovery: "<<CLUSTER_NAME>>"
+  userData: |
+    [settings.kubelet-device-plugins.nvidia]
+    device-partitioning-strategy = "mig"
+
+    [settings.kubelet-device-plugins.nvidia.mig.profile]
+    # One entry per GPU model the gpu-mig NodePool admits, so every node
+    # from this NodeClass boots partitioned. The count format ("4") is
+    # supported for A100 40/80GB, H100 80GB, and H200 141GB; a specific
+    # profile string (e.g. "2g.10gb") works on any MIG-capable GPU.
+    "a100.40gb" = "4"    # p4d.24xlarge
+    "a100.80gb" = "4"    # p4de.24xlarge
+    "h100.80gb" = "4"    # p5.4xlarge / p5.48xlarge
+    "h200.141gb" = "4"   # p5e / p5en

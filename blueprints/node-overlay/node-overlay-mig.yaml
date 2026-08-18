@@ -1,0 +1,59 @@
+# NodeOverlay to inform Karpenter about MIG-partitioned GPU capacity.
+#
+# The NodeClass partitions each H100 80GB into 4 MIG slices, and Bottlerocket's
+# device plugin (single strategy) advertises them as plain nvidia.com/gpu.
+# Without this overlay, Karpenter's scheduling simulation believes a
+# 1-GPU H100 instance can fit one pod and would launch four instances for
+# four pending pods.
+#
+# Scoping matters: the overlay is pinned to the gpu-mig NodePool AND to
+# H100 instances with 1 physical GPU, so it rewrites capacity for exactly
+# the nodes the NodeClass will actually partition. Other NodePools using
+# H100s (for example a TP serving pool that must NOT be partitioned) are
+# unaffected.
+#
+# capacity here must mirror the node's real configuration:
+#   1 physical GPU x 4 partitions ("h100.80gb" = "4") = nvidia.com/gpu: 4
+# The overlay declares reality to the simulation; it does not create it.
+apiVersion: karpenter.sh/v1alpha1
+kind: NodeOverlay
+metadata:
+  name: mig-h100-1gpu
+spec:
+  weight: 10
+  requirements:
+    - key: karpenter.sh/nodepool
+      operator: In
+      values: ["gpu-mig"]
+    - key: karpenter.k8s.aws/instance-gpu-name
+      operator: In
+      values: ["h100"]
+    - key: karpenter.k8s.aws/instance-gpu-count
+      operator: In
+      values: ["1"]
+  capacity:
+    nvidia.com/gpu: 4
+---
+# Same layout on the 8-GPU MIG-capable instances the gpu-mig pool admits
+# (p4d/p4de A100, p5.48xlarge H100, p5e/p5en H200): 8 x 4 = 32.
+# All these models carry 4 partitions per GPU in the NodeClass profile map,
+# so one overlay covers the whole layout. One overlay per layout: every
+# node an overlay matches is assumed to carry the same partition scheme.
+apiVersion: karpenter.sh/v1alpha1
+kind: NodeOverlay
+metadata:
+  name: mig-8gpu
+spec:
+  weight: 10
+  requirements:
+    - key: karpenter.sh/nodepool
+      operator: In
+      values: ["gpu-mig"]
+    - key: karpenter.k8s.aws/instance-gpu-name
+      operator: In
+      values: ["a100", "h100", "h200"]
+    - key: karpenter.k8s.aws/instance-gpu-count
+      operator: In
+      values: ["8"]
+  capacity:
+    nvidia.com/gpu: 32

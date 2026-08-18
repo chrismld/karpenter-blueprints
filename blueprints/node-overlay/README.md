@@ -324,6 +324,96 @@ kubectl delete -f gpu-nodeclass.yaml
 
 ---
 
+## Scenario 2b: GPU Partitioning with MIG and NodeOverlay
+
+### Overview
+
+Time-slicing (Scenario 2) shares a GPU with no isolation: one misbehaving pod can affect its neighbors. [NVIDIA Multi-Instance GPU (MIG)](https://docs.nvidia.com/datacenter/tesla/mig-user-guide/) partitions a GPU at the hardware level instead: each slice gets dedicated memory and SMs, with memory **and** fault isolation. This is the sharing mechanism most commonly seen in production, on MIG-capable GPUs (A100, H100, H200, B200 class).
+
+Bottlerocket supports MIG natively through userData settings ([announcement](https://aws.amazon.com/about-aws/whats-new/2025/03/bottlerocket-nvidia-multi-instance-gpu-mig-kubernetes-workloads/), [settings reference](https://bottlerocket.dev/en/os/latest/api/settings/kubelet-device-plugins/)), no GPU Operator required:
+
+```toml
+[settings.kubelet-device-plugins.nvidia]
+device-partitioning-strategy = "mig"
+
+[settings.kubelet-device-plugins.nvidia.mig.profile]
+"h100.80gb" = "4"   # 4 partitions per H100 80GB GPU
+```
+
+Two properties of Bottlerocket's MIG support shape this scenario:
+
+1. **Single strategy naming.** One profile per GPU model, applied to all GPUs on the node, advertised as plain `nvidia.com/gpu` with the multiplied count (a 1-GPU H100 instance advertises `nvidia.com/gpu: 4`). Mixed per-profile resources (`nvidia.com/mig-1g.5gb` and friends) require the NVIDIA device plugin in mixed mode via the GPU Operator, which is outside this blueprint's scope.
+2. **The profile map is keyed by GPU model.** Only GPUs matching a key get partitioned. That is what lets the NodePool stay broad: nodes with unlisted GPU models boot unpartitioned.
+
+### The pod expresses intent, the pool owns the hardware knowledge
+
+This scenario is designed so that after the one-time setup (NodeClass, NodePool, NodeOverlay), workloads never require NodePool changes, and never need to know GPU model names. The pod declares only what it needs:
+
+```yaml
+nodeSelector:
+  gpu-sharing: mig    # "I need a hardware-isolated GPU slice"
+resources:
+  limits:
+    nvidia.com/gpu: 1 # one MIG slice
+```
+
+Karpenter has no "MIG-capable" scheduling label, and GPU memory is a false proxy (an L40S has 48 GB and no MIG; an A100 40 GB has MIG). So the closed list of MIG-capable models (`a100`, `h100`, `h200`) lives as a requirement on the `gpu-mig` NodePool, set once and updated roughly once per GPU generation. This split has a safety property: a pod asking for MIG isolation can never land on a GPU that silently cannot partition, because the pool will not admit one. Karpenter picks the cheapest MIG-capable instance that satisfies the pods.
+
+The NodeOverlays are scoped to `karpenter.sh/nodepool: gpu-mig` plus GPU name and count, so they rewrite capacity for exactly the nodes the NodeClass will partition. Other NodePools using the same GPU models (for example a tensor-parallel serving pool that must NOT be partitioned) are unaffected.
+
+This "intent label on the pod, hardware list on the pool" split is also a preview of where Kubernetes is heading: with Dynamic Resource Allocation, the pod will express these attributes natively through a ResourceClaim instead of a label convention (see the frontier section of the companion talk).
+
+Two caveats from the Bottlerocket docs: MIG configuration is applied at boot (fine with Karpenter, since userData is present at launch), and **NVLink is not supported while MIG is enabled**, so a MIG-partitioned node cannot serve NVLink-dependent tensor-parallel workloads. MPS and MIG are mutually exclusive.
+
+### Deploy
+
+Replace the placeholders as in Scenario 2:
+
+```sh
+sed -i '' "s/<<CLUSTER_NAME>>/$CLUSTER_NAME/g" mig-nodeclass.yaml
+sed -i '' "s/<<KARPENTER_NODE_IAM_ROLE_NAME>>/$KARPENTER_NODE_IAM_ROLE_NAME/g" mig-nodeclass.yaml
+kubectl apply -f mig-nodeclass.yaml
+kubectl apply -f mig-nodepool.yaml
+kubectl apply -f node-overlay-mig.yaml
+```
+
+### Test: 4 slices on 1 node
+
+```sh
+kubectl apply -f workload-mig.yaml
+```
+
+Karpenter should provision a single MIG-capable instance for the 4 replicas (GPU instances may take 2-3 minutes):
+
+```sh
+kubectl get nodeclaims -l karpenter.sh/nodepool=gpu-mig
+```
+
+Verify the node advertises 4 MIG slices per physical GPU:
+
+```sh
+kubectl get nodes -l karpenter.sh/nodepool=gpu-mig -o jsonpath='{.items[*].status.allocatable.nvidia\.com/gpu}'
+```
+
+You should see the physical GPU count times 4: `4` on a p5.4xlarge (1x H100), `32` on a p4d.24xlarge (8x A100). Check all 4 pods run on the single node:
+
+```sh
+kubectl get pods -l app=workload-mig -o wide
+```
+
+You can confirm the partitions on the node itself with `nvidia-smi mig -lgi` (via SSM or the Bottlerocket admin container): four GPU instances on GPU 0.
+
+### Cleanup Scenario 2b
+
+```sh
+kubectl delete -f workload-mig.yaml
+kubectl delete -f node-overlay-mig.yaml
+kubectl delete -f mig-nodepool.yaml
+kubectl delete -f mig-nodeclass.yaml
+```
+
+---
+
 ## Scenario 3: Targeting Specific NodePools
 
 ### Overview
@@ -474,7 +564,7 @@ kubectl delete -f nodepool-targeted.yaml
 
 4. **GPU time-slicing requires both NodeOverlay and node configuration**: NodeOverlay tells Karpenter about the capacity, while the EC2NodeClass userData configures actual time-slicing on Bottlerocket nodes.
 
-5. **Bottlerocket simplifies GPU time-slicing**: Unlike other AMIs that require the full NVIDIA GPU Operator, Bottlerocket has built-in support for time-slicing via userData settings.
+5. **Bottlerocket simplifies GPU sharing**: Unlike other AMIs that require the full NVIDIA GPU Operator, Bottlerocket has built-in support for time-slicing, MPS, and MIG via userData settings. Its MIG support is the single strategy (uniform partitions per GPU model, advertised as plain `nvidia.com/gpu`); mixed per-profile resources need the GPU Operator.
 
 6. **NodeOverlays integrate with consolidation**: Price and capacity changes affect consolidation decisions, potentially triggering node replacements when configurations change.
 

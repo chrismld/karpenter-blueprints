@@ -1,0 +1,42 @@
+# Sample workload requesting a MIG slice.
+#
+# The pod expresses INTENT, not hardware:
+#   - gpu-sharing: mig  -> "I need a hardware-isolated GPU slice"
+#   - nvidia.com/gpu: 1 -> one MIG slice (single strategy advertises
+#                          slices as plain nvidia.com/gpu)
+#
+# Which GPU models support MIG is the gpu-mig NodePool's knowledge, not the
+# workload's. Karpenter picks the cheapest MIG-capable instance that fits;
+# with the NodeClass partitioning each GPU into 4 slices and the NodeOverlay
+# declaring that capacity, these 4 replicas land on ONE instance
+# (a p5.4xlarge in regions that offer it) instead of four.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: workload-mig
+spec:
+  replicas: 4
+  selector:
+    matchLabels:
+      app: workload-mig
+  template:
+    metadata:
+      labels:
+        app: workload-mig
+    spec:
+      nodeSelector:
+        gpu-sharing: mig
+      tolerations:
+        - key: nvidia.com/gpu
+          operator: Exists
+          effect: NoSchedule
+      containers:
+      - name: gpu-workload
+        image: public.ecr.aws/eks-distro/kubernetes/pause:v1.33.0-eks-1-33-4
+        imagePullPolicy: Always
+        resources:
+          requests:
+            cpu: 500m
+            memory: 1Gi
+          limits:
+            nvidia.com/gpu: 1
