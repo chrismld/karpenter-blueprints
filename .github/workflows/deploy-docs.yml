@@ -25,9 +25,10 @@ jobs:
     env:
       # Works on forks (owner.github.io/repo) and upstream alike.
       SITE_URL: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/
-      # Optional: Google Search Console HTML-file verification token,
-      # set as a repository variable (Settings > Secrets and variables >
-      # Actions > Variables). Empty means no verification file.
+      # Optional: Google Search Console HTML-file verification tokens,
+      # comma-separated (one per verified owner), set as a repository
+      # variable (Settings > Secrets and variables > Actions > Variables).
+      # Empty means no verification files.
       GOOGLE_SITE_VERIFICATION: ${{ vars.GOOGLE_SITE_VERIFICATION }}
     steps:
       - uses: actions/checkout@v4

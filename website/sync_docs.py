@@ -222,10 +222,13 @@ def main() -> None:
         pages.append((name, nav_title, description, body))
 
     # Google Search Console ownership verification, if configured.
-    # Set the GOOGLE_SITE_VERIFICATION repository variable to the token
-    # from the "HTML file" verification method (e.g. google1234abcd).
-    token = os.environ.get("GOOGLE_SITE_VERIFICATION", "").strip()
-    if token:
+    # Set the GOOGLE_SITE_VERIFICATION repository variable to one or more
+    # comma-separated tokens from the "HTML file" verification method
+    # (e.g. "google1234abcd,google5678efgh"), one per verified owner.
+    tokens = os.environ.get("GOOGLE_SITE_VERIFICATION", "")
+    for token in (t.strip() for t in tokens.split(",")):
+        if not token:
+            continue
         fname = token if token.endswith(".html") else f"{token}.html"
         (OUT_DIR / fname).write_text(
             f"google-site-verification: {fname}\n", encoding="utf-8"
